@@ -74,15 +74,6 @@ resource "google_secret_manager_secret_version" "encryption_key_secret_version" 
   secret_data = random_password.n8n_encryption_key.result
 }
 
-# Supabase URL secret (manually created)
-resource "google_secret_manager_secret" "supabase_url" {
-  secret_id = "${var.cloud_run_service_name}-supabase-url"
-  project   = var.gcp_project_id
-  replication {
-    auto {}
-  }
-  depends_on = [google_project_service.secretmanager]
-}
 
 # --- IAM Service Account & Permissions --- #
 resource "google_service_account" "n8n_sa" {
@@ -98,12 +89,6 @@ resource "google_secret_manager_secret_iam_member" "encryption_key_secret_access
   member    = "serviceAccount:${google_service_account.n8n_sa.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "supabase_url_accessor" {
-  project   = google_secret_manager_secret.supabase_url.project
-  secret_id = google_secret_manager_secret.supabase_url.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.n8n_sa.email}"
-}
 
 # Cloud Build service account permissions
 resource "google_project_iam_member" "cloudbuild_run_admin" {
@@ -172,16 +157,6 @@ resource "google_cloud_run_v2_service" "n8n" {
         value = "https"
       }
       
-      # Supabase connection via environment variable
-      env {
-        name = "SUPABASE_URL"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.supabase_url.secret_id
-            version = "latest"
-          }
-        }
-      }
       
       env {
         name = "N8N_ENCRYPTION_KEY"
@@ -279,7 +254,6 @@ resource "google_cloud_run_v2_service" "n8n" {
   depends_on = [
     google_project_service.run,
     google_secret_manager_secret_iam_member.encryption_key_secret_accessor,
-    google_secret_manager_secret_iam_member.supabase_url_accessor,
     google_artifact_registry_repository.n8n_repo
   ]
 }
