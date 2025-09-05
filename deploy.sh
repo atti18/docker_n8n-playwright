@@ -111,20 +111,54 @@ echo "Project ID:   ${GCP_PROJECT_ID}"
 echo "Region:       ${GCP_REGION}"
 echo "Image Tag:    ${IMAGE_TAG}"
 echo "Repo Name:    ${AR_REPO_NAME}"
+echo "Supabase:     ${SUPABASE_URL:+[configured]}"
 echo "---------------------"
+
+# Check for Supabase URL
+echo "Checking for Supabase URL..."
+SUPABASE_URL=""
+if [ -f "terraform/terraform.tfvars" ]; then
+    SUPABASE_URL=$(grep -E "^[[:space:]]*supabase_url[[:space:]]*=" terraform/terraform.tfvars 2>/dev/null | \
+        awk -F'=' '{print $2}' | \
+        awk '{$1=$1};1' | \
+        tr -d '"' | \
+        awk -F'#' '{print $1}' | \
+        awk '{$1=$1};1')
+fi
+
+if [ -z "$SUPABASE_URL" ] && [ -n "$TF_VAR_supabase_url" ]; then
+    SUPABASE_URL="$TF_VAR_supabase_url"
+fi
+
+if [ -z "$SUPABASE_URL" ]; then
+    echo "Warning: supabase_url not found in terraform/terraform.tfvars or TF_VAR_supabase_url env var."
+    echo "You will need to manually add the Supabase URL to Google Secret Manager after deployment."
+    echo "Secret name: n8n-supabase-url"
+    echo ""
+    read -p "Press enter to continue or Ctrl+C to abort..."
+fi
 
 # --- Step 1: Ensure Artifact Registry Exists via Terraform --- #
 echo "\n---> Applying Terraform configuration for Artifact Registry..."
 cd terraform
 tf_repo_resource="google_artifact_registry_repository.n8n_repo"
 tf_service_resource="google_project_service.artifactregistry"
+tf_secret_resource="google_secret_manager_secret.supabase_url"
 
 echo "Initializing Terraform..."
 terraform init -reconfigure
 
 echo "Applying target: ${tf_service_resource} and ${tf_repo_resource}..."
 # Apply only the API enablement and the repo creation first
-terraform apply -target="$tf_service_resource" -target="$tf_repo_resource" -auto-approve
+terraform apply -target="$tf_service_resource" -target="$tf_repo_resource" -target="$tf_secret_resource" -auto-approve
+
+# If Supabase URL is provided, add it to Secret Manager
+if [ -n "$SUPABASE_URL" ]; then
+    echo "\n---> Adding Supabase URL to Secret Manager..."
+    echo -n "$SUPABASE_URL" | gcloud secrets versions add "${SERVICE_NAME}-supabase-url" --data-file=- --project="${GCP_PROJECT_ID}" 2>/dev/null || \
+    echo -n "$SUPABASE_URL" | gcloud secrets create "${SERVICE_NAME}-supabase-url" --data-file=- --project="${GCP_PROJECT_ID}" || \
+    echo "Secret already exists or cannot be created. Please add manually."
+fi
 
 # Go back to root for Docker commands
 cd ..
@@ -149,5 +183,14 @@ terraform apply -auto-approve
 echo "\n---> Deployment process completed."
 N8N_URL=$(terraform output -raw cloud_run_service_url)
 echo "n8n should be accessible at: ${N8N_URL}"
+
+if [ -z "$SUPABASE_URL" ]; then
+    echo ""
+    echo "IMPORTANT: Please add your Supabase URL to Google Secret Manager:"
+    echo "  1. Go to https://console.cloud.google.com/security/secret-manager"
+    echo "  2. Find the secret: ${SERVICE_NAME}-supabase-url"
+    echo "  3. Add a new version with your Supabase connection string"
+    echo "  4. Restart the Cloud Run service"
+fi
 
 cd .. 

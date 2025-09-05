@@ -28,18 +28,13 @@ resource "google_project_service" "run" {
   disable_on_destroy = false
 }
 
-resource "google_project_service" "sqladmin" {
-  service            = "sqladmin.googleapis.com"
-  disable_on_destroy = false
-}
-
 resource "google_project_service" "secretmanager" {
   service            = "secretmanager.googleapis.com"
   disable_on_destroy = false
 }
 
 resource "google_project_service" "cloudresourcemanager" {
-  service            = "cloudresourcemanager.googleapis.com" # Added during manual deployment
+  service            = "cloudresourcemanager.googleapis.com"
   disable_on_destroy = false
 }
 
@@ -53,72 +48,13 @@ resource "google_artifact_registry_repository" "n8n_repo" {
   depends_on    = [google_project_service.artifactregistry]
 }
 
-# --- Cloud SQL --- #
-resource "google_sql_database_instance" "n8n_db_instance" {
-  name             = "${var.cloud_run_service_name}-db" # Use service name prefix for uniqueness
-  project          = var.gcp_project_id
-  region           = var.gcp_region
-  database_version = "POSTGRES_13"
-  settings {
-    tier              = var.db_tier
-    availability_type = "ZONAL"  # Match guide
-    disk_type         = "PD_HDD" # Match guide
-    disk_size         = var.db_storage_size
-    backup_configuration {
-      enabled = false # Match guide
-    }
-  }
-  deletion_protection = false # Allow deletion in Terraform
-  depends_on          = [google_project_service.sqladmin]
-}
-
-resource "google_sql_database" "n8n_database" {
-  name     = var.db_name
-  instance = google_sql_database_instance.n8n_db_instance.name
-  project  = var.gcp_project_id
-}
-
-resource "google_sql_user" "n8n_user" {
-  name     = var.db_user
-  instance = google_sql_database_instance.n8n_db_instance.name
-  password = random_password.db_password.result
-  project  = var.gcp_project_id
-}
-
 # --- Secret Manager --- #
-# Generate a random password for the DB
-resource "random_password" "db_password" {
-  length      = 16
-  special     = true
-  min_upper   = 1
-  min_lower   = 1
-  min_numeric = 1
-  min_special = 1
-  keepers = {
-    db_instance = google_sql_database_instance.n8n_db_instance.name
-    db_user     = var.db_user
-  }
-}
-
-resource "google_secret_manager_secret" "db_password_secret" {
-  secret_id = "${var.cloud_run_service_name}-db-password"
-  project   = var.gcp_project_id
-  replication {
-    auto {}
-  }
-  depends_on = [google_project_service.secretmanager]
-}
-
-resource "google_secret_manager_secret_version" "db_password_secret_version" {
-  secret      = google_secret_manager_secret.db_password_secret.id
-  secret_data = random_password.db_password.result
-}
-
 # Secret Manager: n8n encryption key
 resource "random_password" "n8n_encryption_key" {
   length  = 32
   special = false
 }
+
 resource "google_secret_manager_secret" "encryption_key_secret" {
   secret_id = "${var.cloud_run_service_name}-encryption-key"
   project   = var.gcp_project_id
@@ -133,18 +69,21 @@ resource "google_secret_manager_secret_version" "encryption_key_secret_version" 
   secret_data = random_password.n8n_encryption_key.result
 }
 
+# Supabase URL secret (manually created)
+resource "google_secret_manager_secret" "supabase_url" {
+  secret_id = "${var.cloud_run_service_name}-supabase-url"
+  project   = var.gcp_project_id
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.secretmanager]
+}
+
 # --- IAM Service Account & Permissions --- #
 resource "google_service_account" "n8n_sa" {
   account_id   = var.service_account_name
   display_name = "n8n Service Account for Cloud Run"
   project      = var.gcp_project_id
-}
-
-resource "google_secret_manager_secret_iam_member" "db_password_secret_accessor" {
-  project   = google_secret_manager_secret.db_password_secret.project
-  secret_id = google_secret_manager_secret.db_password_secret.secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.n8n_sa.email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "encryption_key_secret_accessor" {
@@ -154,19 +93,17 @@ resource "google_secret_manager_secret_iam_member" "encryption_key_secret_access
   member    = "serviceAccount:${google_service_account.n8n_sa.email}"
 }
 
-resource "google_project_iam_member" "sql_client" {
-  project = var.gcp_project_id
-  role    = "roles/cloudsql.client"
-  member  = "serviceAccount:${google_service_account.n8n_sa.email}"
+resource "google_secret_manager_secret_iam_member" "supabase_url_accessor" {
+  project   = google_secret_manager_secret.supabase_url.project
+  secret_id = google_secret_manager_secret.supabase_url.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.n8n_sa.email}"
 }
 
 # --- Cloud Run Service --- #
 locals {
   # Construct the image name dynamically
   n8n_image_name = "${var.gcp_region}-docker.pkg.dev/${var.gcp_project_id}/${var.artifact_repo_name}/${var.cloud_run_service_name}:latest"
-  # Construct the service URL dynamically for env vars
-  service_url  = "https://${var.cloud_run_service_name}-${google_project_service.run.project}.run.app" # Assuming default URL format
-  service_host = replace(local.service_url, "https://", "")
 }
 
 resource "google_cloud_run_v2_service" "n8n" {
@@ -175,29 +112,22 @@ resource "google_cloud_run_v2_service" "n8n" {
   project  = var.gcp_project_id
 
   ingress             = "INGRESS_TRAFFIC_ALL" # Allow unauthenticated
-  deletion_protection = false                 # Ensure this is false
+  deletion_protection = false
 
   template {
     service_account = google_service_account.n8n_sa.email
     scaling {
-      max_instance_count = var.cloud_run_max_instances # Guide uses 1
+      max_instance_count = var.cloud_run_max_instances
       min_instance_count = 0
     }
-    volumes {
-      name = "cloudsql"
-      cloud_sql_instance {
-        instances = [google_sql_database_instance.n8n_db_instance.connection_name]
-      }
-    }
+    
     containers {
-      image = local.n8n_image_name # IMPORTANT: Build and push this image manually first
-      volume_mounts {
-        name       = "cloudsql"
-        mount_path = "/cloudsql"
-      }
+      image = local.n8n_image_name
+      
       ports {
         container_port = var.cloud_run_container_port
       }
+      
       resources {
         limits = {
           cpu    = var.cloud_run_cpu
@@ -205,6 +135,8 @@ resource "google_cloud_run_v2_service" "n8n" {
         }
         startup_cpu_boost = true
       }
+      
+      # Basic n8n configuration
       env {
         name  = "N8N_PATH"
         value = "/"
@@ -214,55 +146,23 @@ resource "google_cloud_run_v2_service" "n8n" {
         name  = "N8N_PORT"
         value = "443"
       }
+      
       env {
         name  = "N8N_PROTOCOL"
         value = "https"
       }
+      
+      # Supabase connection via environment variable
       env {
-        name  = "DB_TYPE"
-        value = "postgresdb"
-      }
-      env {
-        name  = "DB_POSTGRESDB_DATABASE"
-        value = var.db_name
-      }
-      env {
-        name  = "DB_POSTGRESDB_USER"
-        value = var.db_user
-      }
-      env {
-        name  = "DB_POSTGRESDB_HOST"
-        value = "/cloudsql/${google_sql_database_instance.n8n_db_instance.connection_name}"
-      }
-      env {
-        name  = "DB_POSTGRESDB_PORT"
-        value = "5432"
-      }
-      env {
-        name  = "DB_POSTGRESDB_SCHEMA"
-        value = "public"
-      }
-      env {
-        name  = "N8N_USER_FOLDER"
-        value = "/home/node/.n8n"
-      }
-      env {
-        name  = "GENERIC_TIMEZONE"
-        value = var.generic_timezone
-      }
-      env {
-        name  = "QUEUE_HEALTH_CHECK_ACTIVE"
-        value = "true"
-      }
-      env {
-        name = "DB_POSTGRESDB_PASSWORD"
+        name = "SUPABASE_URL"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.db_password_secret.secret_id
+            secret  = google_secret_manager_secret.supabase_url.secret_id
             version = "latest"
           }
         }
       }
+      
       env {
         name = "N8N_ENCRYPTION_KEY"
         value_source {
@@ -272,64 +172,78 @@ resource "google_cloud_run_v2_service" "n8n" {
           }
         }
       }
+      
       env {
         name = "N8N_HOST"
-        # Construct hostname dynamically using project number and region
         value = "${var.cloud_run_service_name}-${data.google_project.project.number}.${var.gcp_region}.run.app"
       }
+      
       env {
-        name = "N8N_WEBHOOK_URL" # Deprecated but may be needed by older nodes/workflows
-        # Construct URL dynamically using project number and region
+        name = "N8N_WEBHOOK_URL"
         value = "https://${var.cloud_run_service_name}-${data.google_project.project.number}.${var.gcp_region}.run.app"
       }
+      
       env {
         name = "N8N_EDITOR_BASE_URL"
-        # Construct URL dynamically using project number and region
         value = "https://${var.cloud_run_service_name}-${data.google_project.project.number}.${var.gcp_region}.run.app"
       }
+      
       env {
-        name = "WEBHOOK_URL" # Current version
-        # Construct URL dynamically using project number and region
+        name = "WEBHOOK_URL"
         value = "https://${var.cloud_run_service_name}-${data.google_project.project.number}.${var.gcp_region}.run.app"
       }
+      
+      env {
+        name  = "N8N_USER_FOLDER"
+        value = "/home/node/.n8n"
+      }
+      
+      env {
+        name  = "GENERIC_TIMEZONE"
+        value = var.generic_timezone
+      }
+      
+      env {
+        name  = "QUEUE_HEALTH_CHECK_ACTIVE"
+        value = "true"
+      }
+      
       env {
         name  = "N8N_RUNNERS_ENABLED"
         value = "true"
       }
+      
       env {
         name  = "N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS"
         value = "true"
       }
+      
       env {
         name  = "N8N_DIAGNOSTICS_ENABLED"
         value = "false"
       }
+      
       env {
-        name  = "DB_POSTGRESDB_CONNECTION_TIMEOUT"
-        value = "60000"
-      }
-      env {
-        name  = "DB_POSTGRESDB_ACQUIRE_TIMEOUT"
-        value = "60000"
-      }
-      env {
-        name  = "EXECUTIONS_PROCESS" # Added from GitHub issue solution
+        name  = "EXECUTIONS_PROCESS"
         value = "main"
       }
+      
       env {
-        name  = "EXECUTIONS_MODE" # Added from GitHub issue solution
+        name  = "EXECUTIONS_MODE"
         value = "regular"
       }
+      
       env {
-        name  = "N8N_LOG_LEVEL" # Added from GitHub issue solution
-        value = "debug"
+        name  = "N8N_LOG_LEVEL"
+        value = "info"
       }
+      
 
       startup_probe {
-        initial_delay_seconds = 120 # Added from GitHub issue solution
+        initial_delay_seconds = 120
         timeout_seconds       = 240
-        period_seconds        = 10 # Reduced period for faster checks
-        failure_threshold     = 3  # Standard threshold
+        period_seconds        = 10
+        failure_threshold     = 3
         tcp_socket {
           port = var.cloud_run_container_port
         }
@@ -344,9 +258,8 @@ resource "google_cloud_run_v2_service" "n8n" {
 
   depends_on = [
     google_project_service.run,
-    google_project_iam_member.sql_client,
-    google_secret_manager_secret_iam_member.db_password_secret_accessor,
     google_secret_manager_secret_iam_member.encryption_key_secret_accessor,
+    google_secret_manager_secret_iam_member.supabase_url_accessor,
     google_artifact_registry_repository.n8n_repo
   ]
 }
