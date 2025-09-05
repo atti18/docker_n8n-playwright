@@ -149,7 +149,7 @@ resource "google_cloud_run_v2_service" "n8n" {
       
       env {
         name  = "N8N_PORT"
-        value = "443"
+        value = "5678"
       }
       
       env {
@@ -231,6 +231,18 @@ resource "google_cloud_run_v2_service" "n8n" {
       env {
         name  = "N8N_LOG_LEVEL"
         value = "info"
+      }
+      
+      # SQLite configuration
+      env {
+        name  = "DB_SQLITE_POOL_SIZE"
+        value = "3"
+      }
+      
+      # Security settings
+      env {
+        name  = "N8N_BLOCK_ENV_ACCESS_IN_NODE"
+        value = "false"
       }
       
 
