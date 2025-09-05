@@ -175,22 +175,22 @@ resource "google_cloud_run_v2_service" "n8n" {
       
       env {
         name = "N8N_HOST"
-        value = "${var.cloud_run_service_name}-${data.google_project.project.number}.${var.gcp_region}.run.app"
+        value = "n8n-${data.google_project.project.number}.${var.gcp_region}.run.app"
       }
       
       env {
         name = "N8N_WEBHOOK_URL"
-        value = "https://${var.cloud_run_service_name}-${data.google_project.project.number}.${var.gcp_region}.run.app"
+        value = "https://n8n-${data.google_project.project.number}.${var.gcp_region}.run.app"
       }
       
       env {
         name = "N8N_EDITOR_BASE_URL"
-        value = "https://${var.cloud_run_service_name}-${data.google_project.project.number}.${var.gcp_region}.run.app"
+        value = "https://n8n-${data.google_project.project.number}.${var.gcp_region}.run.app"
       }
       
       env {
         name = "WEBHOOK_URL"
-        value = "https://${var.cloud_run_service_name}-${data.google_project.project.number}.${var.gcp_region}.run.app"
+        value = "https://n8n-${data.google_project.project.number}.${var.gcp_region}.run.app"
       }
       
       env {
@@ -258,6 +258,16 @@ resource "google_cloud_run_v2_service" "n8n" {
       
       env {
         name  = "N8N_DISABLE_UI"
+        value = "false"
+      }
+      
+      env {
+        name  = "N8N_TEMPLATES_ENABLED"
+        value = "true"
+      }
+      
+      env {
+        name  = "N8N_ONBOARDING_FLOW_DISABLED"
         value = "false"
       }
       
