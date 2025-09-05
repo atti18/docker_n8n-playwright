@@ -38,6 +38,11 @@ resource "google_project_service" "cloudresourcemanager" {
   disable_on_destroy = false
 }
 
+resource "google_project_service" "cloudbuild" {
+  service            = "cloudbuild.googleapis.com"
+  disable_on_destroy = false
+}
+
 # --- Artifact Registry --- #
 resource "google_artifact_registry_repository" "n8n_repo" {
   project       = var.gcp_project_id
@@ -98,6 +103,21 @@ resource "google_secret_manager_secret_iam_member" "supabase_url_accessor" {
   secret_id = google_secret_manager_secret.supabase_url.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.n8n_sa.email}"
+}
+
+# Cloud Build service account permissions
+resource "google_project_iam_member" "cloudbuild_run_admin" {
+  project = var.gcp_project_id
+  role    = "roles/run.admin"
+  member  = "serviceAccount:${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+  depends_on = [google_project_service.cloudbuild]
+}
+
+resource "google_project_iam_member" "cloudbuild_sa_user" {
+  project = var.gcp_project_id
+  role    = "roles/iam.serviceAccountUser"
+  member  = "serviceAccount:${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+  depends_on = [google_project_service.cloudbuild]
 }
 
 # --- Cloud Run Service --- #
