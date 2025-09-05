@@ -148,6 +148,11 @@ resource "google_cloud_run_v2_service" "n8n" {
       }
       
       env {
+        name  = "N8N_LISTEN_ADDRESS"
+        value = "0.0.0.0"
+      }
+      
+      env {
         name  = "N8N_PORT"
         value = "5678"
       }
@@ -242,6 +247,17 @@ resource "google_cloud_run_v2_service" "n8n" {
       # Security settings
       env {
         name  = "N8N_BLOCK_ENV_ACCESS_IN_NODE"
+        value = "false"
+      }
+      
+      # Additional required settings
+      env {
+        name  = "N8N_BASIC_AUTH_ACTIVE"
+        value = "false"
+      }
+      
+      env {
+        name  = "N8N_DISABLE_UI"
         value = "false"
       }
       
